@@ -408,7 +408,7 @@ def run_training_experiment() -> None:
         "min_freq": 2,
     }
 
-    wandb.init(project="da6401-a3", config=config)
+    wandb.init(entity="arshit1-mankodi-iit-madras", project="DL_3", config=config)
     cfg = wandb.config
 
     train_ds = Multi30kDataset(split="train", min_freq=cfg.min_freq)
@@ -436,7 +436,12 @@ def run_training_experiment() -> None:
         collate_fn=lambda batch: collate_fn(batch, pad_idx),
     )
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     model = Transformer(
         src_vocab_size=len(train_ds.src_vocab["itos"]),
         tgt_vocab_size=len(train_ds.tgt_vocab["itos"]),
