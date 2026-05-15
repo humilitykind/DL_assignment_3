@@ -457,10 +457,20 @@ class Transformer(nn.Module):
         tokenizer_en = None,
     ) -> None:
         super().__init__()
-        # TODO: Instantiate
-        # init should also load the model weights if checkpoint path provided, download the .pth file like this
-        if checkpoint_path is not None:
-            gdown.download(id="<.pth drive id>", output=checkpoint_path, quiet=False)
+        _GDRIVE_ID = "1wFQBIjT8uzK4WufpjHcCMaJhtrdd1ugF"
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _default_ckpt = os.path.join(_here, "checkpoint.pt")
+
+        # Auto-load: if checkpoint.pt is an LFS pointer stub (< 10 KB), download real weights.
+        # This triggers on the autograder where git-lfs is absent.
+        if checkpoint_path is None:
+            if os.path.exists(_default_ckpt) and os.path.getsize(_default_ckpt) < 10_000:
+                gdown.download(id=_GDRIVE_ID, output=_default_ckpt, quiet=False)
+                checkpoint_path = _default_ckpt
+        elif checkpoint_path is not None:
+            if not os.path.exists(checkpoint_path) or os.path.getsize(checkpoint_path) < 10_000:
+                gdown.download(id=_GDRIVE_ID, output=checkpoint_path, quiet=False)
+
         self.src_embed = nn.Embedding(src_vocab_size, d_model)
         self.tgt_embed = nn.Embedding(tgt_vocab_size, d_model)
         self.pos_enc = PositionalEncoding(d_model, dropout)
@@ -480,8 +490,15 @@ class Transformer(nn.Module):
         self.tokenizer_en = tokenizer_en
 
         if checkpoint_path is not None and os.path.exists(checkpoint_path):
-            state = torch.load(checkpoint_path, map_location="cpu")
-            self.load_state_dict(state)
+            state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            if "model_state_dict" in state:
+                self.load_state_dict(state["model_state_dict"])
+                if state.get("src_vocab") is not None:
+                    self.src_vocab = state["src_vocab"]
+                if state.get("tgt_vocab") is not None:
+                    self.tgt_vocab = state["tgt_vocab"]
+            else:
+                self.load_state_dict(state)
 
     # ── AUTOGRADER HOOKS ── keep these signatures exactly ─────────────
 
@@ -594,7 +611,7 @@ class Transformer(nn.Module):
 
         # Decode
         from train import greedy_decode
-        max_len = min(100, len(src_indices) * 2 + 10)
+        max_len = min(30, len(src_indices) + 10)
         decoded = greedy_decode(
             self, src_tensor, src_mask, max_len,
             start_symbol=2, end_symbol=3, device=str(device)
