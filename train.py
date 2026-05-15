@@ -118,8 +118,8 @@ def run_epoch(
         tgt_input = tgt[:, :-1]
         tgt_out = tgt[:, 1:]
 
-        src_mask = make_src_mask(src)
-        tgt_mask = make_tgt_mask(tgt_input)
+        src_mask = make_src_mask(src, pad_idx)
+        tgt_mask = make_tgt_mask(tgt_input, pad_idx)
 
         logits = model(src, tgt_input, src_mask, tgt_mask)
         loss = loss_fn(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
@@ -227,10 +227,11 @@ def evaluate_bleu(
     predictions = []
     references = []
 
+    pad_idx = 0  # dataset uses <pad>=0
     for src, tgt in test_dataloader:
         src = src.to(device)
         tgt = tgt.to(device)
-        src_mask = make_src_mask(src)
+        src_mask = make_src_mask(src, pad_idx)
 
         for i in range(src.size(0)):
             decoded = greedy_decode(
@@ -400,7 +401,7 @@ def run_training_experiment() -> None:
         "d_ff": 2048,
         "num_layers": 6,
         "dropout": 0.1,
-        "warmup_steps": 4000,
+        "warmup_steps": 2000,
         "batch_size": 64,
         "num_epochs": 10,
         "lr": 1.0,
@@ -450,6 +451,10 @@ def run_training_experiment() -> None:
         num_heads=cfg.num_heads,
         d_ff=cfg.d_ff,
         dropout=cfg.dropout,
+        src_vocab=train_ds.src_vocab,
+        tgt_vocab=train_ds.tgt_vocab,
+        tokenizer_de=train_ds._tokenize_de,
+        tokenizer_en=train_ds._tokenize_en,
     ).to(device)
 
     optimizer = torch.optim.Adam(

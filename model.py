@@ -183,9 +183,6 @@ class MultiHeadAttention(nn.Module):
             mask = mask.expand(batch_size, self.num_heads, q.size(-2), k.size(-2))
 
         attn_out, attn_w = scaled_dot_product_attention(q, k, v, mask)
-        attn_w = self.dropout(attn_w)
-        attn_out = torch.matmul(attn_w, v)
-
         attn_out = attn_out.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
         output = self.W_o(attn_out)
         return output
@@ -436,9 +433,13 @@ class Transformer(nn.Module):
         d_ff:      int   = 2048,
         dropout:   float = 0.1,
         checkpoint_path: str = None,
+        src_vocab: Optional[dict] = None,
+        tgt_vocab: Optional[dict] = None,
+        tokenizer_de = None,
+        tokenizer_en = None,
     ) -> None:
         super().__init__()
-        # TODO: Instantiate 
+        # TODO: Instantiate
         # init should also load the model weights if checkpoint path provided, download the .pth file like this
         if checkpoint_path is not None:
             gdown.download(id="<.pth drive id>", output=checkpoint_path, quiet=False)
@@ -453,6 +454,12 @@ class Transformer(nn.Module):
 
         self.generator = nn.Linear(d_model, tgt_vocab_size)
         self.d_model = d_model
+
+        # Store vocabs and tokenizers for inference
+        self.src_vocab = src_vocab
+        self.tgt_vocab = tgt_vocab
+        self.tokenizer_de = tokenizer_de
+        self.tokenizer_en = tokenizer_en
 
         if checkpoint_path is not None and os.path.exists(checkpoint_path):
             state = torch.load(checkpoint_path, map_location="cpu")
@@ -527,12 +534,52 @@ class Transformer(nn.Module):
     def infer(self, src_sentence: str) -> str:
         """
         Translates a German sentence to English using greedy autoregressive decoding.
-        
+
         Args:
             src_sentence: The raw German text.
-            
-            
+
+
         Returns:
             The fully translated English string, detokenized and clean.
         """
-        raise NotImplementedError
+        if (self.src_vocab is None or self.tgt_vocab is None or
+            self.tokenizer_de is None or self.tokenizer_en is None):
+            raise RuntimeError(
+                "Transformer.infer() requires src_vocab, tgt_vocab, "
+                "tokenizer_de, and tokenizer_en to be set during initialization."
+            )
+
+        device = next(self.parameters()).device
+
+        # Tokenize source sentence
+        tokens = self.tokenizer_de(src_sentence)
+        src_stoi = self.src_vocab["stoi"]
+        itos_en = self.tgt_vocab["itos"]
+
+        # Convert to indices
+        src_indices = [src_stoi.get(tok, 1) for tok in tokens]  # 1 is <unk>
+        src_indices = [2] + src_indices + [3]  # Add <sos> and <eos>
+        src_tensor = torch.tensor([src_indices], dtype=torch.long, device=device)
+
+        # Create mask
+        src_mask = make_src_mask(src_tensor)
+        src_mask = src_mask.to(device)
+
+        # Decode
+        from train import greedy_decode
+        max_len = min(100, len(src_indices) * 2 + 10)
+        decoded = greedy_decode(
+            self, src_tensor, src_mask, max_len,
+            start_symbol=2, end_symbol=3, device=str(device)
+        )
+
+        # Convert indices back to tokens
+        pred_indices = decoded.squeeze(0).tolist()[1:]  # Skip <sos>
+        if pred_indices and pred_indices[-1] == 3:  # Remove <eos>
+            pred_indices = pred_indices[:-1]
+
+        pred_tokens = [itos_en[idx] if idx < len(itos_en) else "<unk>" for idx in pred_indices]
+
+        # Detokenize and clean
+        translation = " ".join(pred_tokens)
+        return translation
