@@ -248,19 +248,20 @@ def evaluate_bleu(
             if pred_tokens and pred_tokens[-1] == 3:
                 pred_tokens = pred_tokens[:-1]
 
+            SKIP = {0, 1, 3}  # <pad>=0, <unk>=1, <eos>=3
             if isinstance(tgt_vocab, dict) and "itos" in tgt_vocab:
                 itos = tgt_vocab["itos"]
-                pred_text = " ".join([itos[idx] for idx in pred_tokens if idx < len(itos)])
+                pred_text = " ".join([itos[idx] for idx in pred_tokens if idx not in SKIP and idx < len(itos)])
                 ref_tokens = tgt[i].tolist()[1:]
-                ref_text = " ".join([itos[idx] for idx in ref_tokens if idx not in (1, 3) and idx < len(itos)])
+                ref_text = " ".join([itos[idx] for idx in ref_tokens if idx not in SKIP and idx < len(itos)])
             elif hasattr(tgt_vocab, "lookup_token"):
-                pred_text = " ".join([tgt_vocab.lookup_token(idx) for idx in pred_tokens])
+                pred_text = " ".join([tgt_vocab.lookup_token(idx) for idx in pred_tokens if idx not in SKIP])
                 ref_tokens = tgt[i].tolist()[1:]
-                ref_text = " ".join([tgt_vocab.lookup_token(idx) for idx in ref_tokens if idx != 1 and idx != 3])
+                ref_text = " ".join([tgt_vocab.lookup_token(idx) for idx in ref_tokens if idx not in SKIP])
             else:
-                pred_text = " ".join([tgt_vocab.itos[idx] for idx in pred_tokens])
+                pred_text = " ".join([tgt_vocab.itos[idx] for idx in pred_tokens if idx not in SKIP])
                 ref_tokens = tgt[i].tolist()[1:]
-                ref_text = " ".join([tgt_vocab.itos[idx] for idx in ref_tokens if idx != 1 and idx != 3])
+                ref_text = " ".join([tgt_vocab.itos[idx] for idx in ref_tokens if idx not in SKIP])
 
             predictions.append(pred_text)
             references.append([ref_text])
@@ -403,7 +404,7 @@ def run_training_experiment() -> None:
         "dropout": 0.1,
         "warmup_steps": 2000,
         "batch_size": 64,
-        "num_epochs": 10,
+        "num_epochs": 15,
         "lr": 1.0,
         "label_smoothing": 0.1,
         "min_freq": 2,
@@ -470,11 +471,19 @@ def run_training_experiment() -> None:
         smoothing=cfg.label_smoothing,
     )
 
+    best_val_loss = float("inf")
     for epoch in range(cfg.num_epochs):
         train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler, epoch, is_train=True, device=device)
         val_loss = run_epoch(val_loader, model, loss_fn, None, None, epoch, is_train=False, device=device)
-        wandb.log({"train_loss": train_loss, "val_loss": val_loss, "epoch": epoch})
-        save_checkpoint(model, optimizer, scheduler, epoch, path="checkpoint.pt")
+        log_dict = {"train_loss": train_loss, "val_loss": val_loss, "epoch": epoch,
+                    "lr": optimizer.param_groups[0]["lr"]}
+        if (epoch + 1) % 5 == 0 or epoch == cfg.num_epochs - 1:
+            val_bleu = evaluate_bleu(model, val_loader, train_ds.tgt_vocab, device=device)
+            log_dict["val_bleu"] = val_bleu
+        wandb.log(log_dict)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_checkpoint(model, optimizer, scheduler, epoch, path="checkpoint.pt")
 
     bleu = evaluate_bleu(model, test_loader, train_ds.tgt_vocab, device=device)
     wandb.log({"test_bleu": bleu})

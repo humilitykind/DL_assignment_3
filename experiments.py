@@ -12,7 +12,7 @@ import math
 from typing import Optional, Dict, List
 
 from dataset import Multi30kDataset
-from model import Transformer, make_src_mask, make_tgt_mask
+from model import Transformer, LearnedPositionalEncoding, make_src_mask, make_tgt_mask
 from lr_scheduler import NoamScheduler
 from train import (
     LabelSmoothingLoss, run_epoch, greedy_decode, evaluate_bleu,
@@ -331,8 +331,8 @@ def exp_2_2_scaling_factor():
             tgt_input = tgt[:, :-1]
             tgt_out = tgt[:, 1:]
 
-            src_mask = make_src_mask(src)
-            tgt_mask = make_tgt_mask(tgt_input)
+            src_mask = make_src_mask(src, pad_idx)
+            tgt_mask = make_tgt_mask(tgt_input, pad_idx)
 
             logits = model(src, tgt_input, src_mask, tgt_mask)
             loss = loss_fn(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
@@ -452,7 +452,7 @@ def exp_2_3_attention_visualization():
     src, tgt = sample_batch
     src = src.to(device)
 
-    src_mask = make_src_mask(src)
+    src_mask = make_src_mask(src, train_ds.pad_idx)
 
     # Forward through encoder with attention capture
     with torch.no_grad():
@@ -524,9 +524,56 @@ def _get_attention_weights(layer, x, mask, device):
 # EXPERIMENT 2.4: Positional Encoding vs Learned Embeddings
 # ══════════════════════════════════════════════════════════════════════
 
+def _build_data_and_loaders(cfg):
+    """Helper: build train/val/test datasets and dataloaders."""
+    train_ds = Multi30kDataset(split="train", min_freq=cfg.min_freq)
+    val_ds = Multi30kDataset(
+        split="validation", min_freq=cfg.min_freq,
+        src_vocab=train_ds.src_vocab, tgt_vocab=train_ds.tgt_vocab,
+    )
+    test_ds = Multi30kDataset(
+        split="test", min_freq=cfg.min_freq,
+        src_vocab=train_ds.src_vocab, tgt_vocab=train_ds.tgt_vocab,
+    )
+    pad_idx = train_ds.pad_idx
+    kw = dict(collate_fn=lambda b: collate_fn(b, pad_idx))
+    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, **kw)
+    val_loader   = DataLoader(val_ds,   batch_size=cfg.batch_size, shuffle=False, **kw)
+    test_loader  = DataLoader(test_ds,  batch_size=cfg.batch_size, shuffle=False, **kw)
+    return train_ds, val_ds, test_ds, train_loader, val_loader, test_loader, pad_idx
+
+
+def _build_model(train_ds, cfg, device):
+    return Transformer(
+        src_vocab_size=len(train_ds.src_vocab["itos"]),
+        tgt_vocab_size=len(train_ds.tgt_vocab["itos"]),
+        d_model=cfg.d_model, N=cfg.num_layers,
+        num_heads=cfg.num_heads, d_ff=cfg.d_ff, dropout=cfg.dropout,
+    ).to(device)
+
+
+def _train_model(model, train_loader, val_loader, loss_fn, cfg, device,
+                 prefix, use_noam=True):
+    optimizer = optim.Adam(model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9)
+    scheduler = NoamScheduler(optimizer, d_model=cfg.d_model, warmup_steps=cfg.warmup_steps) if use_noam else None
+    for epoch in range(cfg.num_epochs):
+        train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler,
+                               epoch, is_train=True, device=device)
+        val_loss   = run_epoch(val_loader,   model, loss_fn, None, None,
+                               epoch, is_train=False, device=device)
+        lr = optimizer.param_groups[0]["lr"]
+        wandb.log({f"{prefix}_train_loss": train_loss,
+                   f"{prefix}_val_loss":   val_loss,
+                   f"{prefix}_lr":         lr,
+                   "epoch": epoch})
+        print(f"[{prefix}] Epoch {epoch}: train={train_loss:.4f} val={val_loss:.4f} lr={lr:.6f}")
+    return optimizer, scheduler
+
+
 def exp_2_4_positional_encoding():
     """
     Compare sinusoidal positional encoding vs learned positional embeddings.
+    Trains identical models differing only in pos encoding; reports val BLEU.
     """
     print("\n" + "=" * 60)
     print("Experiment 2.4: Positional Encoding vs Learned Embeddings")
@@ -553,13 +600,25 @@ def exp_2_4_positional_encoding():
     )
     cfg = wandb.config
 
-    # This would require a variant Transformer with learned embeddings
-    # For now, we document the theoretical discussion
+    train_ds, _, _, train_loader, val_loader, test_loader, pad_idx = _build_data_and_loaders(cfg)
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    loss_fn = LabelSmoothingLoss(len(train_ds.tgt_vocab["itos"]), pad_idx, cfg.label_smoothing)
 
-    wandb.log({
-        "note": "Sinusoidal PE allows extrapolation to longer sequences; "
-                "Learned embeddings are task-specific but limited to training length"
-    })
+    # ── Sinusoidal (baseline) ──────────────────────────────────────────
+    print("\n--- Sinusoidal PE ---")
+    model_sin = _build_model(train_ds, cfg, device)
+    _train_model(model_sin, train_loader, val_loader, loss_fn, cfg, device, "sin")
+
+    # ── Learned PE (swap pos_enc after construction) ───────────────────
+    print("\n--- Learned PE ---")
+    model_lrn = _build_model(train_ds, cfg, device)
+    model_lrn.pos_enc = LearnedPositionalEncoding(cfg.d_model, cfg.dropout).to(device)
+    _train_model(model_lrn, train_loader, val_loader, loss_fn, cfg, device, "lrn")
+
+    bleu_sin = evaluate_bleu(model_sin, test_loader, train_ds.tgt_vocab, device=device)
+    bleu_lrn = evaluate_bleu(model_lrn, test_loader, train_ds.tgt_vocab, device=device)
+    wandb.log({"test_bleu_sinusoidal": bleu_sin, "test_bleu_learned": bleu_lrn})
+    print(f"\nTest BLEU — sinusoidal: {bleu_sin:.2f}, learned: {bleu_lrn:.2f}")
 
     wandb.finish()
 
@@ -567,6 +626,26 @@ def exp_2_4_positional_encoding():
 # ══════════════════════════════════════════════════════════════════════
 # EXPERIMENT 2.5: Label Smoothing Ablation
 # ══════════════════════════════════════════════════════════════════════
+
+def _avg_confidence(model, loader, pad_idx, device):
+    """Mean softmax probability of the correct (gold) token over the val set."""
+    model.eval()
+    total_conf, total_tokens = 0.0, 0
+    with torch.no_grad():
+        for src, tgt in loader:
+            src, tgt = src.to(device), tgt.to(device)
+            tgt_input, tgt_out = tgt[:, :-1], tgt[:, 1:]
+            src_mask = make_src_mask(src, pad_idx)
+            tgt_mask = make_tgt_mask(tgt_input, pad_idx)
+            logits = model(src, tgt_input, src_mask, tgt_mask)
+            probs = torch.softmax(logits, dim=-1)
+            non_pad = tgt_out != pad_idx
+            gold_probs = probs.gather(2, tgt_out.unsqueeze(2)).squeeze(2)
+            total_conf += gold_probs[non_pad].sum().item()
+            total_tokens += non_pad.sum().item()
+    model.train()
+    return total_conf / max(total_tokens, 1)
+
 
 def exp_2_5_label_smoothing():
     """
@@ -666,28 +745,18 @@ def exp_2_5_label_smoothing():
 
     for epoch in range(cfg.num_epochs):
         train_loss = run_epoch(
-            train_loader,
-            model_smooth,
-            loss_fn_smooth,
-            optimizer_smooth,
-            scheduler_smooth,
-            epoch,
-            is_train=True,
-            device=device,
+            train_loader, model_smooth, loss_fn_smooth,
+            optimizer_smooth, scheduler_smooth, epoch, is_train=True, device=device,
         )
         val_loss = run_epoch(
-            val_loader,
-            model_smooth,
-            loss_fn_smooth,
-            None,
-            None,
-            epoch,
-            is_train=False,
-            device=device,
+            val_loader, model_smooth, loss_fn_smooth,
+            None, None, epoch, is_train=False, device=device,
         )
+        conf_smooth = _avg_confidence(model_smooth, val_loader, pad_idx, device)
         wandb.log({
             "smooth_train_loss": train_loss,
             "smooth_val_loss": val_loss,
+            "smooth_confidence": conf_smooth,
             "epoch": epoch,
         })
 
@@ -722,28 +791,18 @@ def exp_2_5_label_smoothing():
 
     for epoch in range(cfg.num_epochs):
         train_loss = run_epoch(
-            train_loader,
-            model_no_smooth,
-            loss_fn_no_smooth,
-            optimizer_no_smooth,
-            scheduler_no_smooth,
-            epoch,
-            is_train=True,
-            device=device,
+            train_loader, model_no_smooth, loss_fn_no_smooth,
+            optimizer_no_smooth, scheduler_no_smooth, epoch, is_train=True, device=device,
         )
         val_loss = run_epoch(
-            val_loader,
-            model_no_smooth,
-            loss_fn_no_smooth,
-            None,
-            None,
-            epoch,
-            is_train=False,
-            device=device,
+            val_loader, model_no_smooth, loss_fn_no_smooth,
+            None, None, epoch, is_train=False, device=device,
         )
+        conf_no_smooth = _avg_confidence(model_no_smooth, val_loader, pad_idx, device)
         wandb.log({
             "no_smooth_train_loss": train_loss,
             "no_smooth_val_loss": val_loss,
+            "no_smooth_confidence": conf_no_smooth,
             "epoch": epoch,
         })
 

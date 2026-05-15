@@ -229,7 +229,25 @@ class PositionalEncoding(nn.Module):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  FEED-FORWARD NETWORK 
+#   LEARNED POSITIONAL ENCODING
+# ══════════════════════════════════════════════════════════════════════
+
+class LearnedPositionalEncoding(nn.Module):
+    """Learned positional embeddings via nn.Embedding (for exp 2.4 comparison)."""
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000) -> None:
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        self.embed = nn.Embedding(max_len, d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        positions = torch.arange(x.size(1), device=x.device)
+        x = x + self.embed(positions)
+        return self.dropout(x)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  FEED-FORWARD NETWORK
 # ══════════════════════════════════════════════════════════════════════
 
 class PositionwiseFeedForward(nn.Module):
