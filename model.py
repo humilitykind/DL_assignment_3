@@ -561,20 +561,12 @@ class Transformer(nn.Module):
             The fully translated English string, detokenized and clean.
         """
         if self.src_vocab is None or self.tgt_vocab is None:
-            import os
-            _GDRIVE_ID = "1wFQBIjT8uzK4WufpjHcCMaJhtrdd1ugF"
-            _ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoint.pt")
-            # Re-download if file is missing or is just a Git LFS pointer (< 1 MB)
-            if not os.path.exists(_ckpt_path) or os.path.getsize(_ckpt_path) < 1_000_000:
-                gdown.download(id=_GDRIVE_ID, output=_ckpt_path, quiet=False)
-            _ckpt = torch.load(_ckpt_path, map_location="cpu", weights_only=False)
-            self.src_vocab = _ckpt.get("src_vocab")
-            self.tgt_vocab = _ckpt.get("tgt_vocab")
-
-        if self.src_vocab is None or self.tgt_vocab is None:
-            raise RuntimeError(
-                "Vocab not found in checkpoint. Re-save checkpoint with vocab included."
-            )
+            import os, json
+            _dir = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(_dir, "src_vocab.json"), encoding="utf-8") as f:
+                self.src_vocab = json.load(f)
+            with open(os.path.join(_dir, "tgt_vocab.json"), encoding="utf-8") as f:
+                self.tgt_vocab = json.load(f)
 
         # Tokenizer: prefer spacy, fall back to regex when model not installed
         if self.tokenizer_de is not None:
