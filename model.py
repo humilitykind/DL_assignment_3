@@ -561,8 +561,17 @@ class Transformer(nn.Module):
             The fully translated English string, detokenized and clean.
         """
         if self.src_vocab is None or self.tgt_vocab is None:
+            # Try loading vocab from checkpoint.pt in the same directory
+            import os
+            _ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoint.pt")
+            if os.path.exists(_ckpt_path):
+                _ckpt = torch.load(_ckpt_path, map_location="cpu", weights_only=False)
+                self.src_vocab = _ckpt.get("src_vocab")
+                self.tgt_vocab = _ckpt.get("tgt_vocab")
+
+        if self.src_vocab is None or self.tgt_vocab is None:
             raise RuntimeError(
-                "Vocab not loaded. Call load_checkpoint() before infer()."
+                "Vocab not found. Ensure checkpoint.pt is in the same directory as model.py."
             )
 
         # Tokenizer: prefer spacy, fall back to regex when model not installed

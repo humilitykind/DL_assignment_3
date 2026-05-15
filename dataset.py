@@ -1,8 +1,12 @@
+import re
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
 
 import spacy
 from datasets import load_dataset
+
+def _regex_tokenize(text: str) -> List[str]:
+    return re.findall(r'\w+|[^\w\s]', text.lower(), re.UNICODE)
 
 
 class Multi30kDataset:
@@ -22,8 +26,14 @@ class Multi30kDataset:
         self.max_vocab_size = max_vocab_size
 
         self.dataset = load_dataset("bentrevett/multi30k")
-        self.spacy_de = spacy.load("de_core_news_sm")
-        self.spacy_en = spacy.load("en_core_web_sm")
+        try:
+            self.spacy_de = spacy.load("de_core_news_sm")
+        except OSError:
+            self.spacy_de = None
+        try:
+            self.spacy_en = spacy.load("en_core_web_sm")
+        except OSError:
+            self.spacy_en = None
 
         self.special_tokens = ["<pad>", "<unk>", "<sos>", "<eos>"]
         self.pad_idx = 0
@@ -40,10 +50,14 @@ class Multi30kDataset:
         self.data = self.process_data()
 
     def _tokenize_de(self, text: str) -> List[str]:
-        return [tok.text.lower() for tok in self.spacy_de.tokenizer(text)]
+        if self.spacy_de is not None:
+            return [tok.text.lower() for tok in self.spacy_de.tokenizer(text)]
+        return _regex_tokenize(text)
 
     def _tokenize_en(self, text: str) -> List[str]:
-        return [tok.text.lower() for tok in self.spacy_en.tokenizer(text)]
+        if self.spacy_en is not None:
+            return [tok.text.lower() for tok in self.spacy_en.tokenizer(text)]
+        return _regex_tokenize(text)
 
     def _build_vocab_from_counter(self, counter: Counter) -> Dict[str, Dict]:
         tokens = [tok for tok, freq in counter.items() if freq >= self.min_freq]
