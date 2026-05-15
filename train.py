@@ -336,6 +336,8 @@ def save_checkpoint(
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
             "model_config": model_config,
+            "src_vocab": getattr(model, "src_vocab", None),
+            "tgt_vocab": getattr(model, "tgt_vocab", None),
         },
         path,
     )
@@ -366,6 +368,10 @@ def load_checkpoint(
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     if scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    if checkpoint.get("src_vocab") is not None:
+        model.src_vocab = checkpoint["src_vocab"]
+    if checkpoint.get("tgt_vocab") is not None:
+        model.tgt_vocab = checkpoint["tgt_vocab"]
     return int(checkpoint["epoch"])
 
 

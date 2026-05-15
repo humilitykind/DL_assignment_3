@@ -560,19 +560,23 @@ class Transformer(nn.Module):
         Returns:
             The fully translated English string, detokenized and clean.
         """
-        if (self.src_vocab is None or self.tgt_vocab is None or
-                self.tokenizer_de is None or self.tokenizer_en is None):
-            from dataset import Multi30kDataset
-            _ds = Multi30kDataset(split="train", min_freq=2)
-            self.src_vocab = _ds.src_vocab
-            self.tgt_vocab = _ds.tgt_vocab
-            self.tokenizer_de = _ds._tokenize_de
-            self.tokenizer_en = _ds._tokenize_en
+        if self.src_vocab is None or self.tgt_vocab is None:
+            raise RuntimeError(
+                "Vocab not loaded. Call load_checkpoint() before infer()."
+            )
+
+        # Tokenizer: prefer spacy, fall back to regex when model not installed
+        if self.tokenizer_de is not None:
+            _tok_de = self.tokenizer_de
+        else:
+            import re as _re
+            def _tok_de(text):
+                return _re.findall(r'\w+|[^\w\s]', text.lower(), _re.UNICODE)
 
         device = next(self.parameters()).device
 
         # Tokenize source sentence
-        tokens = self.tokenizer_de(src_sentence)
+        tokens = _tok_de(src_sentence)
         src_stoi = self.src_vocab["stoi"]
         itos_en = self.tgt_vocab["itos"]
 
