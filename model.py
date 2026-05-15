@@ -561,11 +561,13 @@ class Transformer(nn.Module):
             The fully translated English string, detokenized and clean.
         """
         if (self.src_vocab is None or self.tgt_vocab is None or
-            self.tokenizer_de is None or self.tokenizer_en is None):
-            raise RuntimeError(
-                "Transformer.infer() requires src_vocab, tgt_vocab, "
-                "tokenizer_de, and tokenizer_en to be set during initialization."
-            )
+                self.tokenizer_de is None or self.tokenizer_en is None):
+            from dataset import Multi30kDataset
+            _ds = Multi30kDataset(split="train", min_freq=2)
+            self.src_vocab = _ds.src_vocab
+            self.tgt_vocab = _ds.tgt_vocab
+            self.tokenizer_de = _ds._tokenize_de
+            self.tokenizer_en = _ds._tokenize_en
 
         device = next(self.parameters()).device
 
