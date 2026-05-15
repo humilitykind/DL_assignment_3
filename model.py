@@ -585,8 +585,8 @@ class Transformer(nn.Module):
         src_indices = [2] + src_indices + [3]  # Add <sos> and <eos>
         src_tensor = torch.tensor([src_indices], dtype=torch.long, device=device)
 
-        # Create mask
-        src_mask = make_src_mask(src_tensor)
+        # Create mask (pad_idx=0 matches dataset special tokens)
+        src_mask = make_src_mask(src_tensor, pad_idx=0)
         src_mask = src_mask.to(device)
 
         # Decode
