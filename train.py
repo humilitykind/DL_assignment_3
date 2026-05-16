@@ -154,10 +154,7 @@ def greedy_decode(
     device: str = "cpu",
 ) -> torch.Tensor:
     """
-    Generate a translation using beam search (beam_size=4) internally.
-
-    Signature kept per autograder contract; delegates to beam_search_decode
-    for higher BLEU quality while returning the same shape [1, out_len].
+    Generate a translation token-by-token using greedy decoding.
 
     Args:
         model        : Trained Transformer.
@@ -171,9 +168,23 @@ def greedy_decode(
     Returns:
         ys : Generated token indices, shape [1, out_len].
     """
-    return beam_search_decode(
-        model, src, src_mask, max_len, start_symbol, end_symbol, device, beam_size=4
-    )
+    model.eval()
+    src = src.to(device)
+    src_mask = src_mask.to(device)
+
+    with torch.no_grad():
+        memory = model.encode(src, src_mask)
+        ys = torch.tensor([[start_symbol]], device=device, dtype=torch.long)
+
+        for _ in range(max_len - 1):
+            tgt_mask = make_tgt_mask(ys)
+            out = model.decode(memory, src_mask, ys, tgt_mask)
+            next_token = out[:, -1, :].argmax(dim=-1)
+            ys = torch.cat([ys, next_token.unsqueeze(1)], dim=1)
+            if next_token.item() == end_symbol:
+                break
+
+    return ys
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -460,6 +471,8 @@ def run_training_experiment() -> None:
                bleu = evaluate_bleu(model, test_loader, tgt_vocab)
                wandb.log({'test_bleu': bleu})
     """
+    import os
+
     config = {
         "d_model": 512,
         "num_heads": 8,
@@ -468,10 +481,11 @@ def run_training_experiment() -> None:
         "dropout": 0.1,
         "warmup_steps": 2000,
         "batch_size": 64,
-        "num_epochs": 15,
+        "num_epochs": 20,
         "lr": 1.0,
         "label_smoothing": 0.1,
         "min_freq": 2,
+        "resume_checkpoint": "checkpoint.pt",
     }
 
     wandb.init(entity="arshit1-mankodi-iit-madras", project="DL_3", config=config)
@@ -535,8 +549,14 @@ def run_training_experiment() -> None:
         smoothing=cfg.label_smoothing,
     )
 
+    start_epoch = 0
+    resume_path = getattr(cfg, "resume_checkpoint", None)
+    if resume_path and os.path.exists(resume_path) and os.path.getsize(resume_path) > 10_000:
+        start_epoch = load_checkpoint(resume_path, model, optimizer, scheduler) + 1
+        print(f"Resumed from {resume_path}, continuing from epoch {start_epoch}")
+
     best_val_loss = float("inf")
-    for epoch in range(cfg.num_epochs):
+    for epoch in range(start_epoch, cfg.num_epochs):
         train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler, epoch, is_train=True, device=device)
         val_loss = run_epoch(val_loader, model, loss_fn, None, None, epoch, is_train=False, device=device)
         log_dict = {"train_loss": train_loss, "val_loss": val_loss, "epoch": epoch,
