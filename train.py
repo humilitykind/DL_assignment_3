@@ -481,7 +481,7 @@ def run_training_experiment() -> None:
         "dropout": 0.1,
         "warmup_steps": 2000,
         "batch_size": 64,
-        "num_epochs": 20,
+        "num_epochs": 25,
         "lr": 1.0,
         "label_smoothing": 0.1,
         "min_freq": 2,
@@ -550,12 +550,14 @@ def run_training_experiment() -> None:
     )
 
     start_epoch = 0
+    best_val_loss = float("inf")
     resume_path = getattr(cfg, "resume_checkpoint", None)
     if resume_path and os.path.exists(resume_path) and os.path.getsize(resume_path) > 10_000:
         start_epoch = load_checkpoint(resume_path, model, optimizer, scheduler) + 1
         print(f"Resumed from {resume_path}, continuing from epoch {start_epoch}")
-
-    best_val_loss = float("inf")
+        # Measure current model's val loss so we only save if we actually improve
+        best_val_loss = run_epoch(val_loader, model, loss_fn, None, None, -1, is_train=False, device=device)
+        print(f"Current best val loss (baseline): {best_val_loss:.4f}")
     for epoch in range(start_epoch, cfg.num_epochs):
         train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler, epoch, is_train=True, device=device)
         val_loss = run_epoch(val_loader, model, loss_fn, None, None, epoch, is_train=False, device=device)
