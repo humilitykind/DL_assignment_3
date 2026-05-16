@@ -190,7 +190,77 @@ def greedy_decode(
 
 
 # ══════════════════════════════════════════════════════════════════════
-#   BLEU EVALUATION  
+#   BEAM SEARCH DECODING
+# ══════════════════════════════════════════════════════════════════════
+
+@torch.no_grad()
+def beam_search_decode(
+    model: Transformer,
+    src: torch.Tensor,
+    src_mask: torch.Tensor,
+    max_len: int,
+    start_symbol: int,
+    end_symbol: int,
+    device: str = "cpu",
+    beam_size: int = 4,
+) -> torch.Tensor:
+    """
+    Beam search decoding with length normalization.
+
+    Returns:
+        Best hypothesis as token indices, shape [1, out_len].
+    """
+    model.eval()
+    src = src.to(device)
+    src_mask = src_mask.to(device)
+
+    memory = model.encode(src, src_mask)
+    # memory: [1, src_len, d_model] — expand for beam
+    memory = memory.expand(beam_size, -1, -1)
+    src_mask = src_mask.expand(beam_size, -1, -1, -1)
+
+    # Each beam: (log_prob, token_sequence)
+    beams = [(0.0, [start_symbol])]
+    completed = []
+
+    for _ in range(max_len - 1):
+        candidates = []
+        for log_prob, seq in beams:
+            if seq[-1] == end_symbol:
+                completed.append((log_prob, seq))
+                continue
+            ys = torch.tensor([seq], device=device, dtype=torch.long)
+            # Replicate ys for batched scoring; trim to actual beam count
+            tgt_mask = make_tgt_mask(ys)
+            out = model.decode(memory[:1], src_mask[:1], ys, tgt_mask)
+            log_probs = torch.log_softmax(out[:, -1, :], dim=-1).squeeze(0)
+            topk_vals, topk_idxs = log_probs.topk(beam_size)
+            for val, idx in zip(topk_vals.tolist(), topk_idxs.tolist()):
+                candidates.append((log_prob + val, seq + [idx]))
+
+        if not candidates:
+            break
+
+        # Length-normalize and keep top beam_size
+        candidates.sort(key=lambda x: x[0] / len(x[1]), reverse=True)
+        beams = candidates[:beam_size]
+
+        # Early exit if all beams ended
+        if all(seq[-1] == end_symbol for _, seq in beams):
+            completed.extend(beams)
+            beams = []
+            break
+
+    completed.extend(beams)
+    if not completed:
+        return torch.tensor([[start_symbol, end_symbol]], device=device, dtype=torch.long)
+
+    best_seq = max(completed, key=lambda x: x[0] / max(len(x[1]), 1))[1]
+    return torch.tensor([best_seq], device=device, dtype=torch.long)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#   BLEU EVALUATION
 # ══════════════════════════════════════════════════════════════════════
 
 def evaluate_bleu(
@@ -234,7 +304,7 @@ def evaluate_bleu(
         src_mask = make_src_mask(src, pad_idx)
 
         for i in range(src.size(0)):
-            decoded = greedy_decode(
+            decoded = beam_search_decode(
                 model,
                 src[i : i + 1],
                 src_mask[i : i + 1],
@@ -242,6 +312,7 @@ def evaluate_bleu(
                 start_symbol=2,
                 end_symbol=3,
                 device=device,
+                beam_size=4,
             )
 
             pred_tokens = decoded.squeeze(0).tolist()[1:]
